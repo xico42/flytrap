@@ -1,0 +1,136 @@
+version: "3"
+
+vars:
+  BIN: bin/flytrap
+  BACKEND_PKG: ./cmd/flytrap
+  FRONTEND_DIST: frontend/dist
+  EMBED_DIST: backend/internal/app/dist
+
+tasks:
+  # ---------- lint ----------
+  lint:backend:
+    desc: Run golangci-lint against the Go code
+    dir: backend
+    cmds:
+      - golangci-lint run ./...
+
+  lint:frontend:
+    desc: Run ESLint on the frontend
+    cmds:
+      - pnpm --dir frontend lint
+
+  lint:types:
+    desc: Typecheck the frontend with tsc
+    cmds:
+      - pnpm --dir frontend exec tsc --noEmit
+
+  lint:lizard:
+    desc: Enforce cyclomatic complexity under 20 (backend + frontend sources)
+    cmds:
+      - lizard backend frontend/src --CCN 20 -w
+          --exclude "backend/internal/app/dist/*"
+          --exclude "frontend/dist/*"
+          --exclude "**/node_modules/*"
+
+  lint:
+    desc: Run every lint in parallel
+    deps: [lint:backend, lint:frontend, lint:types, lint:lizard]
+
+  # ---------- test ----------
+  test:backend:
+    desc: Run Go unit tests
+    dir: backend
+    cmds:
+      - go test ./...
+
+  test:frontend:
+    desc: Run Vitest
+    cmds:
+      - pnpm --dir frontend test
+
+  test:
+    desc: Run every unit-test suite in parallel
+    deps: [test:backend, test:frontend]
+
+  # ---------- build ----------
+  build:frontend:
+    desc: Build the frontend and copy dist into the embed location
+    cmds:
+      - pnpm --dir frontend build
+      - rm -rf {{.EMBED_DIST}}
+      - mkdir -p {{.EMBED_DIST}}
+      - cp -R {{.FRONTEND_DIST}}/. {{.EMBED_DIST}}/
+      - touch {{.EMBED_DIST}}/.gitkeep
+    sources:
+      - frontend/src/**/*
+      - frontend/index.html
+      - frontend/vite.config.ts
+      - frontend/package.json
+      - frontend/pnpm-lock.yaml
+    generates:
+      - "{{.EMBED_DIST}}/index.html"
+
+  build:backend:
+    desc: Build the Go binary (requires frontend dist embedded)
+    deps: [build:frontend]
+    dir: backend
+    env:
+      CGO_ENABLED: "0"
+    cmds:
+      - go build -o {{.ROOT_DIR}}/{{.BIN}} {{.BACKEND_PKG}}
+    sources:
+      - "**/*.go"
+      - "internal/app/dist/**/*"
+    generates:
+      - "{{.ROOT_DIR}}/{{.BIN}}"
+
+  build:
+    desc: Full build (frontend → embed → Go binary)
+    deps: [build:backend]
+
+  # ---------- dev ----------
+  dev:frontend:
+    desc: Run the Vite dev server (host use; compose calls it too)
+    cmds:
+      - pnpm --dir frontend dev
+
+  dev:backend:
+    desc: Run the Go backend with go run (host use; compose calls it too)
+    dir: backend
+    cmds:
+      - go run {{.BACKEND_PKG}}
+
+  dev:
+    desc: Start the full dev environment via docker compose
+    cmds:
+      - docker compose up --build
+
+  # ---------- e2e ----------
+  e2e:install:
+    desc: Install e2e dependencies (Playwright browsers included)
+    cmds:
+      - pnpm --dir e2e install
+      - pnpm --dir e2e exec playwright install chromium
+
+  e2e:playwright:
+    desc: Run Playwright specs (assumes a binary is already listening)
+    cmds:
+      - pnpm --dir e2e test
+
+  e2e:
+    desc: Full e2e — build, start binary, probe, run tests, tear down
+    deps: [build, e2e:install]
+    cmds:
+      - cmd: ./scripts/run-e2e.sh
+        silent: false
+
+  # ---------- ci ----------
+  # Sequential by design: `e2e` runs `build:frontend` which writes into
+  # `backend/internal/app/dist/`. That directory is scanned by `lint:lizard`,
+  # so parallelizing lint+test+e2e would race. Run them in order.
+  ci:
+    desc: Lint + unit tests + e2e (sequential)
+    cmds:
+      - task: lint
+      - task: test
+      - task: e2e
