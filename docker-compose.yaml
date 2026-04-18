@@ -1,0 +1,33 @@
+services:
+  backend:
+    image: golang:1.26-alpine
+    working_dir: /workspace/backend
+    command: sh -c "apk add --no-cache git && go run ./cmd/flytrap"
+    environment:
+      PORT: "8080"
+      CGO_ENABLED: "0"
+    volumes:
+      - .:/workspace
+      - go-mod-cache:/go/pkg/mod
+      - go-build-cache:/root/.cache/go-build
+    ports:
+      - "8080:8080"
+
+  frontend:
+    image: node:22-alpine
+    working_dir: /workspace/frontend
+    command: sh -c "corepack enable && pnpm install && pnpm dev --host 0.0.0.0"
+    environment:
+      VITE_API_PROXY: http://backend:8080
+    volumes:
+      - .:/workspace
+      - frontend-node-modules:/workspace/frontend/node_modules
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+
+volumes:
+  go-mod-cache:
+  go-build-cache:
+  frontend-node-modules:
